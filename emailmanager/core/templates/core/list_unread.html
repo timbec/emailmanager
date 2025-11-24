@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Unread Emails</title>
+</head>
+
+<body>
+    <h1>Unread Emails (last 30 days)</h1>
+
+    <p><a href="/">Back to Home</a></p>
+
+    <ul>
+        {% for email in emails %}
+        <li><strong>{{ email.subject }}</strong> - {{ email.from }}</li>
+        {% empty %}
+        <li>No unread emails found.</li>
+        {% endfor %}
+    </ul>
+</body>
+
+</html>
