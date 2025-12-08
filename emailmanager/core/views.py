@@ -14,6 +14,15 @@ from .services import (
     list_oldest_unread_emails,
 )
 
+@api_view(["GET"])
+def test_auth(request):
+    if test_authentication():
+        return Response({"message": "Authentication successful!"})
+    return Response(
+        {"message": "Authentication failed, please check your credentials."},
+        status=status.HTTP_400_BAD_REQUEST,
+    )
+
 
 def home_page(request):
     return render(request, "core/home.html")
@@ -26,18 +35,10 @@ def list_unread_page(request):
 
 
 @api_view(["GET"])
-def test_auth(request):
-    if test_authentication():
-        return Response({"message": "Authentication successful!"})
-    return Response(
-        {"message": "Authentication failed, please check your credentials."},
-        status=status.HTTP_400_BAD_REQUEST,
-    )
-
-@api_view(["GET"])
 def list_oldest_unread(request):
     service = authenticate_gmail()
-    emails = list_oldest_unread_emails(service, limit=50)
+    emails = list_oldest_unread_emails(service, limit=50, days = 5110)
+    print(emails)
     return Response({"emails": emails})
 
 

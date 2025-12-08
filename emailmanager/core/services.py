@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
 
+from django.http import JsonResponse
+
 
 # ------------------------------------------------------------
 # Test Authentication (mirrors FastAPI behavior exactly)
@@ -58,15 +60,6 @@ def list_recent_unread_emails(service, days=30):
 
             headers = msg["payload"]["headers"]
 
-            # subject = next(
-            #     (header["value"] for header in headers if header["name"] == "Subject"),
-            #     "No Subject"
-            # )
-            # from_email = next(
-            #     (header["value"] for header in headers if header["name"] == "From"),
-            #     "Unknown Sender"
-            # )
-
             subject = next(
                 (h["value"] for h in headers if h["name"] == "Subject"),
                 "No Subject"
@@ -111,181 +104,119 @@ def list_recent_unread_emails(service, days=30):
     
 
 
-# def list_oldest_unread_emails(service, limit=50):
-#     """
-#     Returns the oldest unread emails (up to `limit`).
-#     Gmail API does not allow sorting directly, so we:
-#       - Fetch unread messages
-#       - Retrieve their internalDate
-#       - Sort ascending (oldest first)
-#       - Return the oldest N
-#     """
-
-#     try:
-#         # Fetch ALL unread message IDs
-#         # but Gmail paginates results — so we fetch until we have at least `limit`
-#         messages = []
-#         next_page = None
-
-#         while len(messages) < limit:
-#             response = service.users().messages().list(
-#                 userId="me",
-#                 q="is:unread",
-#                 pageToken=next_page,
-#                 maxResults=100  # larger batch for speed
-#             ).execute()
-
-#             msgs = response.get("messages", [])
-#             messages.extend(msgs)
-
-#             next_page = response.get("nextPageToken")
-
-#             if not next_page:
-#                 break  # no more messages
-
-#         # Fetch metadata for sorting (internalDate)
-#         detailed = []
-#         for msg in messages[:limit]:  # slice for safety
-#             full = service.users().messages().get(
-#                 userId="me",
-#                 id=msg["id"],
-#                 format="metadata",
-#                 metadataHeaders=["Subject", "From", "Date"]
-#             ).execute()
-
-#             headers = full["payload"]["headers"]
-#             subject = next((h["value"] for h in headers if h["name"] == "Subject"), "No Subject")
-#             from_email = next((h["value"] for h in headers if h["name"] == "From"), "Unknown Sender")
-
-#             detailed.append({
-#                 "id": full["id"],
-#                 "subject": subject,
-#                 "from": from_email,
-#                 "internalDate": int(full.get("internalDate", 0)),
-#             })
-
-#         # Sort by oldest first
-#         detailed.sort(key=lambda x: x["internalDate"])
-
-#         # Return the oldest N
-#         return detailed[:limit]
-
-#     except Exception as e:
-#         print(f"Error listing oldest unread emails: {e}")
-#         return []
-
-
-from datetime import datetime, timedelta
-
-def list_oldest_unread_emails(service, limit=50):
+def list_oldest_unread_emails(service, limit, days):
     """
-    Returns the oldest unread emails (up to `limit`) including date,
-    subject, from, and id.
+    Returns the oldest unread emails.
+    
+    Args:
+        years_back (int): key optimization. Adds "older_than:Xy" to the query
+                          so we don't waste time scanning new emails.
     """
-
     try:
-        # Step 1: Fetch enough unread message IDs to cover the limit
-        messages = []
-        next_page = None
+        # --- Step 1: Construct a smart query ---
+        # Instead of just "is:unread", we ask for "is:unread older_than:10y"
+        # This jumps straight to the bottom of the stack.
 
-        while len(messages) < limit:
+        # Five years ago: 
+        five_years_ago = (datetime.now() - timedelta(days=1825)).strftime('%Y/%m/%d')
+        print('Five years ago: ', five_years_ago)
+        query = f"is:unread before:{five_years_ago}"
+
+        # Ten years ago: 
+        ten_years_ago = (datetime.now() - timedelta(days=3650)).strftime('%Y/%m/%d')
+        print('Ten years ago: ', ten_years_ago)
+        query = f"is:unread before:{ten_years_ago}"
+
+        years_ago = (datetime.now() - timedelta(days)).strftime('%Y/%m/%d')
+        print('How many years ago: ', years_ago)
+        query = f"is:unread before:{years_ago}"
+
+        
+        print(f"Searching with query: {query}") 
+
+        messages_metadata = []
+        next_page = None
+        
+        # We still cap this loop to prevent infinite hangs, but now 
+        # we are looping through the RELEVANT (old) emails.
+        safety_limit = 1000 
+        
+        while len(messages_metadata) < safety_limit:
             response = service.users().messages().list(
                 userId="me",
-                q="is:unread",
+                q=query, 
                 pageToken=next_page,
-                maxResults=100
+                maxResults=500,
+                fields="nextPageToken,messages(id, internalDate)"
             ).execute()
 
             msgs = response.get("messages", [])
-            messages.extend(msgs)
+            messages_metadata.extend(msgs)
+            
 
             next_page = response.get("nextPageToken")
+            
+            # If we run out of pages, stop.
             if not next_page:
                 break
+        
+        # If the query was too aggressive (e.g., no emails > 10 years old),
+        # we might return an empty list. You could add logic here to fallback
+        # to "older_than:5y" if len(messages_metadata) == 0.
+        if not messages_metadata:
+            print("No emails found that far back.")
+            return []
 
-        # Step 2: Pull metadata (Subject, From, Date, internalDate)
+        # --- Step 2: Sort what we found ---
+        # Sort by internalDate (Ascending = Oldest first)
+        # Sorting by internalDate ensures accuracy regardless of API order.
+        
+        # FIX: Use .get() with a fallback of '0' (for sorting) to prevent KeyError.
+        # We also filter out any message that doesn't have an ID (optional, but clean).
+        valid_messages = [msg for msg in messages_metadata if msg.get('id')]
+        
+        valid_messages.sort(
+            key=lambda x: int(x.get('internalDate', 0))
+        )
+        
+        # Now take the oldest 'limit' from the valid messages
+        oldest_ids = valid_messages[:limit]
+
+        # --- Step 3: Fetch Details ---
         detailed = []
-
-        for msg in messages[:limit]:
+        for msg_meta in oldest_ids:
             full = service.users().messages().get(
                 userId="me",
-                id=msg["id"],
+                id=msg_meta["id"],
                 format="metadata",
                 metadataHeaders=["Subject", "From", "Date"]
             ).execute()
 
             headers = full["payload"]["headers"]
 
-            subject = next(
-                (h["value"] for h in headers if h["name"] == "Subject"),
-                "No Subject"
-            )
-            from_email = next(
-                (h["value"] for h in headers if h["name"] == "From"),
-                "Unknown Sender"
-            )
+            def get_header(name):
+                return next(
+                    (h["value"] for h in headers if h["name"] == name), 
+                    "Unknown"
+                )
 
-            # get the Date header
-            date_header = next(
-                (h["value"] for h in headers if h["name"] == "Date"),
-                None
-            )
-
-            if date_header:
-                try:
-                    # Convert header like "Mon, 24 Nov 2025 08:01:17 -0500" → datetime object
-                    parsed_dt = parsedate_to_datetime(date_header)
-                    date_iso = parsed_dt.isoformat()
-                except Exception:
-                    parsed_dt = None
-                    date_iso = None
-            else:
-                parsed_dt = None
-                date_iso = None
-
-            # Try "Date" header first
-            date_str = next(
-                (h["value"] for h in headers if h["name"] == "Date"),
-                None
-            )
-
-            # Parse or fallback to internalDate
-            if date_str:
-                try:
-                    # Try the standard RFC 2822 portion
-                    parsed_date = datetime.strptime(
-                        date_str[:25], "%a, %d %b %Y %H:%M:%S"
-                    )
-                    date_final = parsed_date.isoformat()
-                except Exception:
-                    # Fallback to raw string
-                    date_final = date_str
-            else:
-                internal_ms = int(full.get("internalDate", 0))
-                parsed_date = datetime.fromtimestamp(internal_ms / 1000)
-                date_final = parsed_date.isoformat()
-
-            # Make internalDate human-readable
             internal_ms = int(full.get("internalDate", 0))
             internal_dt = datetime.fromtimestamp(internal_ms / 1000)
-            internal_human = internal_dt.strftime("%a, %d %b %Y %I:%M %p")
+            date_human = internal_dt.strftime("%a, %d %b %Y %I:%M %p")
 
             detailed.append({
                 "id": full["id"],
-                "subject": subject,
-                "from": from_email,
-                "date": date_final,
-                "date": date_header,   # raw header value (recommended for display)
-                # "internalDate": int(full.get("internalDate", 0)),
-                "date_human": internal_human, # New human-readable format
-                "internalDate": internal_ms,  # Raw ms since epoch
+                "subject": get_header("Subject"),
+                "from": get_header("From"),
+                "date_human": date_human,
+                "snippet": full.get("snippet", "") # Added snippet for context
             })
 
-        # Step 3: Sort by oldest first
-        detailed.sort(key=lambda x: x["internalDate"])
-
-        # Step 4: Return only the oldest `limit`
-        return detailed[:limit]
+        # return detailed
+        return {
+            "emails": detailed,
+            "count": len(detailed) # Optional: Adds helpful context
+        }
 
     except Exception as e:
         print(f"Error listing oldest unread emails: {e}")
@@ -298,12 +229,11 @@ def list_oldest_unread_emails(service, limit=50):
 # ------------------------------------------------------------
 def delete_old_unread_emails(service):
     """
-    Deletes unread emails older than 1 year.
-    Mirrors your FastAPI implementation exactly.
+    Deletes unread emails older than 14 year.
     Returns the number of messages deleted.
     """
-    one_year_ago = (datetime.now() - timedelta(days=365)).strftime("%Y/%m/%d")
-    query = f"is:unread before:{one_year_ago}"
+    years_ago = (datetime.now() - timedelta(days=5110)).strftime("%Y/%m/%d")
+    query = f"is:unread before:{years_ago}"
 
     results = service.users().messages().list(
         userId="me",
