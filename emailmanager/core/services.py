@@ -264,7 +264,7 @@ def delete_old_unread_emails(service):
 
 
 ## Mass Deletion by category
-def mass_delete_promotions(service, year, category='promotions', limit=None):
+def mass_delete_promotions(service, year, category='promotions', limit=None, dry_run=False):
     """
     Deletes ALL unread emails in a specific category for a specific year.
     
@@ -335,3 +335,137 @@ def mass_delete_promotions(service, year, category='promotions', limit=None):
 
     print(f"--- DONE. Deleted {total_deleted} emails from {year}. ---")
     return total_deleted
+
+
+def batch_trash_emails(service, message_ids):
+    """
+    Moves a list of message IDs to the Trash efficiently.
+    Uses Google's BatchHttpRequest to avoid making 1000 separate network calls.
+    """
+    if not message_ids:
+        return 0
+
+    # This callback just suppresses errors (like if an email was already deleted)
+    def callback(request_id, response, exception):
+        if exception:
+            print(f"Error trashing message {request_id}: {exception}")
+
+    batch = service.new_batch_http_request(callback=callback)
+
+    for msg_id in message_ids:
+        # We queue up the 'trash' command instead of executing it immediately
+        batch.add(
+            service.users().messages().trash(userId='me', id=msg_id),
+            request_id=msg_id
+        )
+
+    # Fire all queued commands at once
+    batch.execute()
+    
+    return len(message_ids)
+
+
+
+# core/utils.py
+
+import time
+from collections import Counter
+
+# Make sure 'dry_run' is in this line:
+def mass_delete_emails(service, year, category='promotions', limit=None, dry_run=True):
+    
+    # 1. Build Query
+    start_date = f"{year}/01/01"
+    end_date = f"{year + 1}/01/01"
+    query = f"category:{category} is:unread after:{start_date} before:{end_date}"
+    
+    print(f"\n{'='*40}")
+    print(f"MODE: {'DRY RUN (Analysis Only)' if dry_run else 'DESTRUCTIVE (Deleting)'}")
+    print(f"Query: {query}")
+    print(f"{'='*40}\n")
+
+    # If Dry Run, we only fetch a small sample to generate a report
+    fetch_limit = 50 if dry_run else 1000
+    
+    total_processed = 0
+    next_page = None
+    
+    while True:
+        # Check global limit
+        if limit and total_processed >= limit:
+            print(f"Reached limit of {limit}.")
+            break
+
+        # 2. Fetch IDs
+        results = service.users().messages().list(
+            userId="me",
+            q=query,
+            pageToken=next_page,
+            maxResults=fetch_limit, 
+            fields="nextPageToken,messages(id)"
+        ).execute()
+
+        messages = results.get("messages", [])
+        
+        if not messages:
+            print("No emails found matching criteria.")
+            break
+
+        # --- DRY RUN LOGIC ---
+        if dry_run:
+            print(f"Analyzing sample of {len(messages)} emails...")
+            senders = []
+            subjects = []
+            
+            for msg in messages:
+                # We need to fetch headers to see the Sender
+                meta = service.users().messages().get(
+                    userId="me", id=msg['id'], format="metadata", 
+                    metadataHeaders=['From', 'Subject']
+                ).execute()
+                
+                headers = meta['payload']['headers']
+                frm = next((h['value'] for h in headers if h['name'] == 'From'), "Unknown")
+                sub = next((h['value'] for h in headers if h['name'] == 'Subject'), "No Subject")
+                
+                # Clean up sender name
+                sender_name = frm.split('<')[0].strip().replace('"', '')
+                senders.append(sender_name)
+                subjects.append(f"{sender_name}: {sub[:30]}...")
+
+            print(f"\n--- SENDER REPORT ({year}) ---")
+            for name, count in Counter(senders).most_common(10):
+                print(f"{count}x  From: {name}")
+            
+            print("\n--- SAMPLE SUBJECTS ---")
+            for s in subjects[:5]:
+                print(f" - {s}")
+                
+            print(f"\n[!] Dry Run Complete. To delete, run with dry_run=False")
+            return 0 # Stop here
+
+        # --- DELETION LOGIC (Using Trash) ---
+        else:
+            # Use the permanent batchDelete OR the batch_trash helper we made
+            batch_ids = [msg['id'] for msg in messages]
+            print(f"Deleting batch of {len(batch_ids)} emails...")
+            
+            try:
+                service.users().messages().batchDelete(
+                    userId="me",
+                    body={"ids": batch_ids}
+                ).execute()
+                
+                total_processed += len(batch_ids)
+                print(f"Total deleted so far: {total_processed}")
+            except Exception as e:
+                print(f"Error: {e}")
+                break
+
+        next_page = results.get("nextPageToken")
+        if not next_page:
+            break
+            
+        time.sleep(1) # Safety pause
+
+    return total_processed
