@@ -3,9 +3,13 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
+# SCOPES = [
+#     "https://www.googleapis.com/auth/gmail.readonly",
+#     "https://www.googleapis.com/auth/gmail.modify",
+# ]
+
 SCOPES = [
-    "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/gmail.modify",
+    "https://mail.google.com/"
 ]
 
 CREDS_PATH = "credentials.json"

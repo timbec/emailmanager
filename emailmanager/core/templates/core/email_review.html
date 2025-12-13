@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Email Cleaner</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            padding: 20px;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .email-item {
+            border: 1px solid #ddd;
+            padding: 15px;
+            margin-bottom: 10px;
+            border-radius: 5px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: #f9f9f9;
+        }
+
+        .email-info {
+            max-width: 80%;
+        }
+
+        .email-subject {
+            font-weight: bold;
+            font-size: 1.1em;
+        }
+
+        .email-meta {
+            color: #666;
+            font-size: 0.9em;
+            margin-top: 5px;
+        }
+
+        .btn-delete {
+            background-color: #ff4d4d;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        .btn-delete:hover {
+            background-color: #cc0000;
+        }
+
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+
+    <h1>Review & Delete Old Emails</h1>
+
+    <div class="controls" style="margin-bottom: 20px;">
+        <button id="btn-batch-delete" onclick="batchDelete()"
+            style="background-color: #d9534f; color: white; padding: 12px 20px; border: none; border-radius: 4px; font-size: 16px; cursor: pointer;">
+            Delete All Visible (Batch)
+        </button>
+        <span id="status-msg" style="margin-left: 10px; font-weight: bold;"></span>
+    </div>
+
+    <div id="loading">Loading emails...</div>
+    <div id="email-list"></div>
+
+    <script src="{% static 'js/reviewer.js' %}"></script>
+
+    <script>
+        // 1. Fetch the list of emails when the page loads
+        async function loadEmails() {
+            // Adjust this URL to match your "list oldest" endpoint
+            const response = await fetch('/api/list-recent-unread/');
+            const data = await response.json();
+
+            document.getElementById('loading').classList.add('hidden');
+            const listContainer = document.getElementById('email-list');
+
+            // data.emails comes from the dictionary structure we created earlier
+            data.emails.forEach(email => {
+                const item = document.createElement('div');
+                item.className = 'email-item';
+                item.id = `row-${email.id}`;
+
+                item.innerHTML = `
+                    <div class="email-info">
+                        <div class="email-subject">${email.subject}</div>
+                        <div class="email-meta">
+                            <strong>From:</strong> ${email.from} <br>
+                            <strong>Date:</strong> ${email.date_human}
+                        </div>
+                    </div>
+                    <button class="btn-delete" onclick="deleteEmail('${email.id}')">
+                        Delete
+                    </button>
+                `;
+                listContainer.appendChild(item);
+            });
+        }
+
+        // 2. The function to handle the button click
+        async function deleteEmail(id) {
+            if (!confirm("Are you sure you want to delete this email?")) return;
+
+            const btn = document.querySelector(`#row-${id} .btn-delete`);
+            btn.textContent = "Deleting...";
+            btn.disabled = true;
+
+            try {
+                // Call the new backend endpoint
+                const response = await fetch(`/api/delete-message/${id}/`, {
+                    method: 'DELETE',
+                    headers: {
+                        'X-CSRFToken': getCookie('csrftoken') // Django requires CSRF for non-GET requests
+                    }
+                });
+
+                if (response.ok) {
+                    // Remove the item from the screen visually
+                    document.getElementById(`row-${id}`).remove();
+                } else {
+                    alert("Failed to delete.");
+                    btn.textContent = "Delete";
+                    btn.disabled = false;
+                }
+            } catch (error) {
+                console.error(error);
+                alert("Error connecting to server.");
+            }
+        }
+
+        // Helper to get Django CSRF token
+        function getCookie(name) {
+            let cookieValue = null;
+            if (document.cookie && document.cookie !== '') {
+                const cookies = document.cookie.split(';');
+                for (let i = 0; i < cookies.length; i++) {
+                    const cookie = cookies[i].trim();
+                    if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                        cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                        break;
+                    }
+                }
+            }
+            return cookieValue;
+        }
+
+        loadEmails();
+    </script>
+</body>
+
+</html>
