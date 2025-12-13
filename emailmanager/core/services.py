@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+import time
 from email.utils import parsedate_to_datetime
 
 from django.http import JsonResponse
@@ -259,3 +260,78 @@ def delete_old_unread_emails(service):
         deleted_count += 1
 
     return deleted_count
+
+
+
+## Mass Deletion by category
+def mass_delete_promotions(service, year, category='promotions', limit=None):
+    """
+    Deletes ALL unread emails in a specific category for a specific year.
+    
+    Args:
+        year (int): The year to target (e.g., 2018).
+        category (str): 'promotions', 'social', 'updates', or 'primary'.
+        limit (int): Optional safety cap (e.g., stop after 5000 deletions).
+    """
+    # 1. Build the specific date range for that year
+    start_date = f"{year}/01/01"
+    end_date = f"{year + 1}/01/01"
+    
+    query = f"category:{category} is:unread after:{start_date} before:{end_date}"
+    print(f"--- STARTING MASS DELETE ---")
+    print(f"Target: {category.upper()} emails from {year}")
+    print(f"Query: {query}")
+
+    total_deleted = 0
+    next_page = None
+    
+    while True:
+        # Check safety limit
+        if limit and total_deleted >= limit:
+            print(f"Reached safety limit of {limit}. Stopping.")
+            break
+
+        # 2. Fetch IDs only (lightweight)
+        # batchDelete only accepts 1000 IDs at a time, so we fetch 1000 max.
+        results = service.users().messages().list(
+            userId="me",
+            q=query,
+            pageToken=next_page,
+            maxResults=1000, 
+            fields="nextPageToken,messages(id)"
+        ).execute()
+
+        messages = results.get("messages", [])
+        
+        if not messages:
+            print("No more messages found matching criteria!")
+            break
+
+        # 3. Extract IDs for the batch
+        batch_ids = [msg['id'] for msg in messages]
+        
+        # 4. EXECUTE BATCH DELETE
+        print(f"Deleting batch of {len(batch_ids)} emails...")
+        try:
+            service.users().messages().batchDelete(
+                userId="me",
+                body={"ids": batch_ids}
+            ).execute()
+            
+            total_deleted += len(batch_ids)
+            print(f"Total deleted so far: {total_deleted}")
+            
+        except Exception as e:
+            print(f"Error during batch delete: {e}")
+            break
+
+        # 5. Check if there are more pages
+        next_page = results.get("nextPageToken")
+        if not next_page:
+            break
+            
+        # Optional: Sleep briefly to be nice to the API
+        time.sleep(0.5)
+
+    print(f"--- DONE. Deleted {total_deleted} emails from {year}. ---")
+    return total_deleted

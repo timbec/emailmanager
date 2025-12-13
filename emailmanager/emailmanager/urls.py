@@ -32,4 +32,8 @@ urlpatterns = [
     path("api/list-oldest-unread/", views.list_oldest_unread),
     path("api/delete-old/", views.delete_old),
 
+    path('api/delete-message/<str:message_id>/', views.delete_single_email, name='delete_single'),
+
+    path('api/batch-delete/', views.batch_delete_emails, name='batch_delete'),
+
 ]

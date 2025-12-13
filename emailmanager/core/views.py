@@ -62,3 +62,51 @@ def delete_old(request):
 
     return Response({"deleted_count": deleted_count})
 
+@api_view(["DELETE"])
+def delete_single_email(request, message_id):
+    """
+    Deletes a single email by ID.
+    """
+    try:
+        service = authenticate_gmail()
+        service.users().messages().delete(
+            userId="me",
+            id=message_id
+        ).execute()
+        
+        return Response({"status": "success", "message_id": message_id})
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
+
+
+def review_page(request):
+    return render(request, 'review.html')
+
+
+@api_view(["POST"])
+def batch_delete_emails(request):
+    """
+    Receives a list of IDs: {'ids': ['123', '456', ...]}
+    Deletes them all instantly using Gmail's batchDelete.
+    """
+    ids_to_delete = request.data.get("ids", [])
+    
+    if not ids_to_delete:
+        return Response({"error": "No IDs provided"}, status=400)
+
+    try:
+        service = authenticate_gmail()
+        
+        # This is the "magic" method that deletes multiple emails in one go
+        service.users().messages().batchDelete(
+            userId="me",
+            body={"ids": ids_to_delete}
+        ).execute()
+        
+        return Response({
+            "status": "success", 
+            "deleted_count": len(ids_to_delete)
+        })
+        
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
